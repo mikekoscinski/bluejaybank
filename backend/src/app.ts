@@ -5,7 +5,7 @@ const express = require('express')
 const db = require('./db')
 const app = express();
 const cors = require('cors')
-const port = 3000;
+const port = 5000;
 
 app.use(cors())
 app.use(express.json())
@@ -36,11 +36,9 @@ app.get('/', (req: Request, res: Response) => {
 app.post('/v1/customers', async (req: Request, res: Response) => {
   // TODO: Do this, then do the account. But do it in one form fill... Have
   // a customer form. Submit. Loading spinner. Then log them in and show the account form.
-  // res.send('Created new customer')
 
   const {email} = req.body
   const checkUniqueEmailQuery = buildGetQuery("SELECT * FROM", "customer", {email})
-
   const isUniqueEmailResult = await db.query(checkUniqueEmailQuery);
   const isUniqueEmail = isUniqueEmailResult.rows.length === 0
 
@@ -88,29 +86,46 @@ app.get('/v1/accounts/:accountID', (req: Request, res: Response) => {
   res.send(`GET account for accountID ${accountID}`);
 })
 
-app.get('/v1/accounts/:accountID/balances', (req: Request, res: Response) => {
-  // TODO: Get specific account balance
+app.get('/v1/accounts/:accountID/balance', async (req: Request, res: Response) => {
   const {accountID} = req.params
-  res.send(`GET account balances for accountID ${accountID}`);
+  const query = `SELECT balance_in_cents FROM "account" WHERE id = '${accountID}'`
+  const result = await db.query(query)
+  const {balance_in_cents} = result.rows[0]
+  res.status(200).json(balance_in_cents)
 })
 
-app.get('/v1/accounts/:accountID/transfers', (req: Request, res: Response) => {
-  // TODO: Get specific account transfers
+app.get('/v1/accounts/:accountID/transfers', async (req: Request, res: Response) => {
   const {accountID} = req.params
-  res.send(`GET account transfers for accountID ${accountID}`);
+  const query = `SELECT * FROM "transaction" WHERE sender_account_id = '${accountID}' OR recipient_account_id = '${accountID}' AND type = 'transfer'`
+  const result = await db.query(query)
+  const {rows} = result
+  res.status(200).json(rows)
 })
 
 app.post('/v1/transactions', async (req: Request, res: Response) => {
+  const {sender_account_id, amount_in_cents, recipient_account_id} = req.body
+  const checkSenderSufficientFundsQuery = buildGetQuery("SELECT balance_in_cents FROM", "account", {customer_id: sender_account_id})
+  const senderAccountBalanceResult = await db.query(checkSenderSufficientFundsQuery)
+  const {balance_in_cents: senderAccountBalanceInCents} = senderAccountBalanceResult.rows[0]
+  const senderHasSufficientFunds = senderAccountBalanceInCents > parseInt(amount_in_cents)
+
   try {
-    const entries = Object.values(req.body)
-    const query = buildInsertQuery("INSERT INTO", "transaction", req.body)
-    const values = [...entries]
-    const result = await db.query(query, values);
+    if (senderHasSufficientFunds) {
+      const entries = Object.values(req.body)
+      const query = buildInsertQuery("INSERT INTO", "transaction", req.body)
+      const values = [...entries]
+      const result = await db.query(query, values);
 
-    // TODO: Check that transaction can occur -- const senderHasSufficientFunds = ...
-    // TODO: UPDATE balances for each participant
+      const updateSenderBalanceQuery = `UPDATE "account" SET balance_in_cents = balance_in_cents - ${amount_in_cents} WHERE id = '${sender_account_id}'`
+      const updateSenderBalanceResult = await db.query(updateSenderBalanceQuery)
 
-    res.json(result.rows)
+      const updateRecipientBalanceQuery = `UPDATE "account" SET balance_in_cents = balance_in_cents + ${amount_in_cents} WHERE id = '${recipient_account_id}'`
+      const updateRecipientBalanceResult = await db.query(updateRecipientBalanceQuery)
+
+      res.json(result.rows)
+    } else {
+      throw new Error('Error: Sender has insufficient funds to complete transaction')
+    }
   } catch (error) {
     console.error(error)
     res.status(500).send('An error occured when creating the transaction')
